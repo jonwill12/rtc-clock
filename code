@@ -1,0 +1,166 @@
+#include <Wire.h>
+#include <RTClib.h>
+#include <LiquidCrystal_I2C.h>
+#include <SoftwareSerial.h>
+#include <DFRobotDFPlayerMini.h>
+
+// RTC and LCD
+RTC_DS1307 rtc;
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// DFPlayer Mini pins
+const uint8_t PIN_MP3_TX = 2; // Arduino TX to DFPlayer RX
+const uint8_t PIN_MP3_RX = 3; // Arduino RX from DFPlayer TX
+
+SoftwareSerial softwareSerial(PIN_MP3_RX, PIN_MP3_TX);
+DFRobotDFPlayerMini player;
+
+// Alarm variables
+int alarmHour = -1;
+int alarmMinute = -1;
+bool alarmSet = false;
+bool alarmRinging = false;
+unsigned long alarmStartTime = 0;
+
+// Joystick pins
+const int joyButton = 4; 
+const int joyX = A2;
+int setMode = 0;
+unsigned long lastInput = 0;
+const int debounceDelay = 200;
+int lastJoyButtonState = HIGH;
+
+void setup() {
+  Wire.begin();
+  rtc.begin();
+  lcd.begin(16, 2);
+  lcd.backlight();
+
+  pinMode(joyButton, INPUT_PULLUP);
+  pinMode(joyX, INPUT);
+  Serial.begin(9600);
+
+  softwareSerial.begin(9600);
+  if (player.begin(softwareSerial)) {
+    Serial.println("DFPlayer Mini connected.");
+    player.volume(40);  // Max volume
+  } else {
+    Serial.println("Connecting to DFPlayer Mini failed!");
+    lcd.setCursor(0, 0);
+    lcd.print("DFPlayer Error!");
+    while (true);
+  }
+
+  if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Alarm Clock");
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  DateTime now = rtc.now();
+
+  // Handle alarm
+  if (alarmRinging) {
+    lcd.setCursor(0, 0);
+    lcd.print("!!! ALARM !!!    ");
+    lcd.setCursor(0, 1);
+    lcd.print("Press button...  ");
+
+    if ((millis() - alarmStartTime > 3000) || (digitalRead(joyButton) == LOW)) {
+      alarmRinging = false;
+      alarmSet = false;
+      alarmHour = -1;
+      alarmMinute = -1;
+      setMode = 0;
+      player.stop();
+      lcd.clear();
+    }
+    return;
+  }
+
+  // Joystick input
+  int xValue = analogRead(joyX);
+  int buttonState = digitalRead(joyButton);
+
+  if (buttonState == LOW && lastJoyButtonState == HIGH && millis() - lastInput > debounceDelay) {
+    setMode++;
+    if (setMode > 2) {
+      alarmSet = true;
+      setMode = 0;
+    }
+    lastInput = millis();
+  }
+  lastJoyButtonState = buttonState;
+
+  if (setMode == 1 && millis() - lastInput > debounceDelay) {
+    if (xValue < 400) {
+      alarmHour = (alarmHour + 1) % 24;
+      lastInput = millis();
+    } else if (xValue > 600) {
+      alarmHour = (alarmHour - 1 + 24) % 24;
+      lastInput = millis();
+    }
+  }
+
+  if (setMode == 2 && millis() - lastInput > debounceDelay) {
+    if (xValue < 400) {
+      alarmMinute = (alarmMinute + 1) % 60;
+      lastInput = millis();
+    } else if (xValue > 600) {
+      alarmMinute = (alarmMinute - 1 + 60) % 60;
+      lastInput = millis();
+    }
+  }
+
+  // Display current time
+  lcd.setCursor(0, 0);
+  lcd.print("Now: ");
+  printTime12Hr(now.hour(), now.minute());
+  lcd.print("   ");
+
+  // Display alarm info
+  lcd.setCursor(0, 1);
+  if (setMode == 1) lcd.print("Set Hr: ");
+  else if (setMode == 2) lcd.print("Set Min:");
+  else lcd.print("Alarm:  ");
+
+  if (alarmHour == -1 || alarmMinute == -1)
+    lcd.print("--:--     ");
+  else
+    printTime12Hr(alarmHour, alarmMinute);
+
+  // Trigger alarm
+  static int lastAlarmMinute = -1;
+  if (alarmSet &&
+      alarmHour == now.hour() &&
+      alarmMinute == now.minute() &&
+      now.minute() != lastAlarmMinute) {
+
+    alarmRinging = true;
+    alarmStartTime = millis();
+    lastAlarmMinute = now.minute();
+    player.play(1); // Play first track
+  }
+
+  delay(100);
+}
+
+void printTime12Hr(int hour, int minute) {
+  String period = (hour < 12) ? "AM" : "PM";
+  int displayHour = hour % 12;
+  if (displayHour == 0) displayHour = 12;
+
+  if (displayHour < 10) lcd.print("0");
+  lcd.print(displayHour);
+  lcd.print(":");
+  if (minute < 10) lcd.print("0");
+  lcd.print(minute);
+  lcd.print(" ");
+  lcd.print(period);
+}
